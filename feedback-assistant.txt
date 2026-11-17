@@ -1,0 +1,77 @@
+TITLE
+
+Rosetta 2 translates AVX2 VPSLLVQ and VPSRLVQ incorrectly for shift counts above 2^32
+
+WHICH AREA ARE YOU SEEING AN ISSUE WITH
+
+Rosetta 2 translation of x86-64 binaries
+
+DESCRIPTION
+
+Rosetta 2 computes the wrong result for the AVX2 64-bit variable shift
+instructions VPSLLVQ and VPSRLVQ when an element's shift count has a nonzero
+upper 32 bits.
+
+The Intel SDM specifies that these instructions take an unmasked 64-bit count
+per element and saturate, so any count at or above the 64-bit element width
+produces zero. Rosetta appears to use only the low 32 bits of each count, both
+for the saturation comparison and for the shift itself.
+
+Example, with every element of the source set to 0x1111111111111111.
+
+  count 0x0000000000000040  Rosetta 0x0000000000000000  correct
+  count 0x00000000FFFFFFFF  Rosetta 0x0000000000000000  correct
+  count 0x0000000100000001  Rosetta 0x2222222222222222  should be 0
+  count 0x0000000100000000  Rosetta 0x1111111111111111  should be 0
+  count 0x8000000000000001  Rosetta 0x2222222222222222  should be 0
+  count 0xFFFFFFFF00000001  Rosetta 0x2222222222222222  should be 0
+
+The count 0x0000000100000000 returning the source unchanged is the clearest
+signal, since that is a shift by zero, which is what the low half of that count
+would ask for.
+
+VPSRLVQ shows the same divergence. Both the VEX.128 and VEX.256 encodings are
+affected. The 32-bit element forms VPSLLVD, VPSRLVD and VPSRAVD are correct for
+the equivalent counts, which is consistent with a 32-bit truncation of the
+count, as a 32-bit element has no upper half to lose.
+
+No fault, signal or diagnostic is produced. The program receives a wrong value
+and continues.
+
+STEPS TO REPRODUCE
+
+1. Save the attached vpsllvq_probe.c.
+2. Build it for x86-64 so that Rosetta translates it.
+     clang -arch x86_64 -mavx2 -O2 -o vpsllvq_probe vpsllvq_probe.c
+3. Run ./vpsllvq_probe
+
+EXPECTED RESULT
+
+Every line reports ok, and the program prints 0 mismatches. The software
+reference in the probe implements the SDM operation directly.
+
+ACTUAL RESULT
+
+8 mismatches out of the 22 64-bit cases, all of them counts whose upper 32 bits
+are nonzero and whose low 32 bits are below 64. The 32-bit cases all pass.
+
+Full output is attached as output-m5pro-26.7.1.txt.
+
+NOTES
+
+The probe uses inline assembly with memory operands rather than the
+_mm256_sllv_epi64 intrinsic, because the compiler constant-folds the intrinsic
+form at compile time and that folding is correct, which hides the issue.
+
+CONFIGURATION
+
+Apple M5 Pro, Mac17,9
+macOS 26.7.1, build 25G313
+Apple clang, x86-64 target, translated by Rosetta 2
+
+ATTACHMENTS
+
+vpsllvq_probe.c
+vpsllvq_xmm.c
+output-m5pro-26.7.1.txt
+output-xmm-m5pro-26.7.1.txt
